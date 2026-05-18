@@ -1,85 +1,86 @@
 import pandas as pd
-import joblib
 import numpy as np
+import joblib
 import os
 from sklearn.metrics import mean_squared_log_error
 
 def prever_precos(caminho_arquivo_teste):
     """
     Função obrigatória para o corretor automático.
-    Lê o arquivo de teste, aplica o pré-processamento numérico e retorna as predições.
-    
+
+    Lê o arquivo CSV de teste, aplica todo o pré-processamento via Pipeline
+    treinado e retorna as predições de preço em dólares (escala original).
+
     Parâmetros:
-    caminho_arquivo_teste (str): Caminho local para o arquivo CSV de teste.
-    
+        caminho_arquivo_teste (str): Caminho para o CSV de teste.
+
     Retorna:
-    np.array: As predições de preços (não negativas).
+        np.array: Predições de SalePrice em dólares, na mesma ordem das linhas do CSV.
     """
-    # 1. Leitura dos dados de teste
+    # 1. Leitura
     df_teste = pd.read_csv(caminho_arquivo_teste)
 
-    # 2. Pré-processamento (Espelhando o treinamento do baseline)
-    # Selecionar apenas colunas numéricas
-    X = df_teste.select_dtypes(include=[np.number])
-    
-    # Remover coluna Id se ela estiver presente
-    if 'Id' in X.columns:
-        X = X.drop(columns=['Id'])
-        
-    # Preencher valores nulos com 0
-    X = X.fillna(0)
+    # 2. Remove coluna Id se presente (não é feature)
+    if 'Id' in df_teste.columns:
+        df_teste = df_teste.drop(columns=['Id'])
 
-    # 3. Carregamento do modelo
-    caminho_modelo = 'modelo_baseline.joblib'
+    # 3. Remove SalePrice se presente (ex: teste_publico com coluna alvo)
+    if 'SalePrice' in df_teste.columns:
+        df_teste = df_teste.drop(columns=['SalePrice'])
+
+    # 4. Carrega o pipeline completo (pré-processamento + modelo)
+    caminho_modelo = os.path.join(os.path.dirname(__file__), 'modelo.joblib')
     if not os.path.exists(caminho_modelo):
-        raise FileNotFoundError(f"O arquivo do modelo '{caminho_modelo}' não foi encontrado na raiz do projeto.")
-        
-    modelo = joblib.load(caminho_modelo)
+        raise FileNotFoundError(
+            f"Arquivo '{caminho_modelo}' não encontrado. "
+            "Certifique-se de que modelo.joblib está na raiz do repositório."
+        )
+    pipeline = joblib.load(caminho_modelo)
 
-    # 4. Alinhamento de colunas (Garante consistência com o treino)
-    if hasattr(modelo, 'feature_names_in_'):
-        X = X.reindex(columns=modelo.feature_names_in_, fill_value=0)
+    # 5. Predição — o pipeline já inclui todo o pré-processamento
+    #    O modelo foi treinado com log1p(SalePrice), então revertemos com expm1
+    predicoes_log = pipeline.predict(df_teste)
+    predicoes = np.expm1(predicoes_log)
 
-    # 5. Predição
-    predicoes = modelo.predict(X)
+    # 6. Garante valores não negativos (segurança para o RMSLE)
+    predicoes = np.clip(predicoes, a_min=0, a_max=None)
 
-    # 6. Pós-processamento
-    # Garante valores >= 0 para evitar erro no cálculo do RMSLE
-    predicoes_finais = np.clip(predicoes, a_min=0, a_max=None)
+    return predicoes
 
-    return predicoes_finais
 
 if __name__ == "__main__":
-    # Bloco de teste local para o aluno
-    arquivo_teste_exemplo = 'teste_publico.csv'
-    
-    print(f"--- Executando Validação Local do Pipeline ---")
-    
-    if not os.path.exists(arquivo_teste_exemplo):
-        print(f"[Aviso] Arquivo '{arquivo_teste_exemplo}' não encontrado.")
-        print(f"Dica: Crie um CSV fictício com as colunas numéricas para testar o script.")
+    arquivo_teste = os.path.join(os.path.dirname(__file__), 'teste_publico.csv')
+
+    print("─" * 50)
+    print("  Validação Local do Pipeline")
+    print("─" * 50)
+
+    if not os.path.exists(arquivo_teste):
+        print(f"[Aviso] '{arquivo_teste}' não encontrado.")
     else:
         try:
-            # Executa a predição
-            resultados = prever_precos(arquivo_teste_exemplo)
-            
-            print("\n✅ Sucesso! O pipeline rodou corretamente.")
-            print("-" * 30)
-            print("Primeiras 5 predições:")
-            print(resultados[:5])
-            print("-" * 30)
-            
-            # Tenta calcular o RMSLE se a coluna alvo estiver no arquivo de teste
-            df_val = pd.read_csv(arquivo_teste_exemplo)
+            resultados = prever_precos(arquivo_teste)
+
+            print("✅ Pipeline executado com sucesso!")
+            print(f"   Total de predições : {len(resultados)}")
+            print(f"   Primeiras 5        : {np.round(resultados[:5], 2)}")
+            print(f"   Mín / Máx          : ${resultados.min():,.0f} / ${resultados.max():,.0f}")
+            print(f"   Média              : ${resultados.mean():,.0f}")
+
+            # Calcula RMSLE se o arquivo tiver SalePrice
+            df_val = pd.read_csv(arquivo_teste)
             if 'SalePrice' in df_val.columns:
-                y_true = df_val['SalePrice']
-                # Cálculo do Root Mean Squared Log Error
-                rmsle = np.sqrt(mean_squared_log_error(y_true, resultados))
-                print(f"Métrica RMSLE Local: {rmsle:.5f}")
+                rmsle = np.sqrt(mean_squared_log_error(df_val['SalePrice'], resultados))
+                print(f"\n   RMSLE local        : {rmsle:.5f}")
+                print(f"   Baseline professor : 0.17543")
+                if rmsle < 0.17543:
+                    print(f"   ✅ Supera o baseline! ({rmsle:.5f} < 0.17543)")
+                else:
+                    print(f"   ⚠ Abaixo do baseline.")
             else:
-                print("[Nota] Coluna 'SalePrice' não encontrada no CSV. Cálculo do RMSLE pulado.")
-            
+                print("\n   [Nota] SalePrice não encontrado no CSV — RMSLE não calculado.")
+
         except Exception as e:
-            print(f"\n❌ Erro encontrado no pipeline:")
-            print(str(e))
-            print("\nVerifique se o seu modelo espera as mesmas colunas presentes no CSV de teste.")
+            print(f"❌ Erro no pipeline:\n{e}")
+
+    print("─" * 50)
